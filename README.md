@@ -13,13 +13,13 @@ DeGenPrime 2.0 is a complete redesign of the original PCR primer design tool, re
 
 ## 🎯 What's New in Version 2.0
 
-✨ **3x Faster** - Optimized Rust implementation (78ms vs 245ms)
-✨ **Beautiful GUI** - Professional PyQt6 interface for non-coders
-✨ **Interactive Reports** - Plotly visualizations in HTML format
-✨ **Professional Analytics** - Polars-based statistical analysis
-✨ **MAFFT Integration** - Automatic sequence alignment
-✨ **56% Less Code** - 2,500 lines vs 5,700 lines (cleaner architecture)
-✨ **Better Experience** - Professional reports, easy parameter configuration
+- ✨ **3x Faster** - Optimized Rust implementation (78ms vs 245ms) 
+- ✨ **Beautiful GUI** - Professional PyQt6 interface for non-coders
+- ✨ **Interactive Reports** - Plotly visualizations in HTML format
+- ✨ **Professional Analytics** - Polars-based statistical analysis
+- ✨ **MAFFT Integration** - Automatic sequence alignment
+- ✨ **56% Less Code** - 2,500 lines vs 5,700 lines (cleaner architecture)
+- ✨ **Better Experience** - Professional reports, easy parameter configuration
 
 ---
 
