@@ -353,10 +353,12 @@ Creative Commons Attribution-NonCommercial (CC BY-NC 4.0) — See LICENSE file
 ## 📚 Citing
 
 If you are publishing results obtained using DeGenPrime2, please cite: <br />
-- Pre-Print White III RA. 2026. DeGenPrime-2.0 - A robust, streamlined, and accurate primer design via functional programming in Rust. bioRxiv. <br />
+- Pre-Print : <br />
+  White III RA. 2026. DeGenPrime-2.0 - A robust, streamlined, and accurate primer design via functional programming in Rust. bioRxiv. <br />
 
 Consider citing the original work in C++, please cite: <br />
-- [DeGenPrime](https://doi.org/10.1093/bioadv/vbae044) Fulghum B, Tanker SH, White III RA. 2024. DeGenPrime provides robust primer design and optimization unlocking the biosphere. Bioinform Adv. 14;4(1):vbae044. 
+- [DeGenPrime](https://doi.org/10.1093/bioadv/vbae044):  <br />
+  Fulghum B, Tanker SH, White III RA. 2024. DeGenPrime provides robust primer design and optimization unlocking the biosphere. Bioinform Adv. 14;4(1):vbae044. 
 
 ---
 
