@@ -6,6 +6,12 @@
 ![Status](https://img.shields.io/badge/status-Production%20Ready-brightgreen)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70%2B-orange)
+![Crates.io](https://img.shields.io/crates/v/DeGenPrime2?logo=rust)
+![License](https://img.shields.io/badge/license-CC_BY--NC_4.0-blue)
+![Build](https://img.shields.io/github/actions/workflow/status/raw937/DeGenPrime2/rust.yml?branch=main)
+![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-success)
+![Polars](https://img.shields.io/badge/powered%20by-polars-purple)
+![Bioinformatics](https://img.shields.io/badge/domain-bioinformatics-green)
 
 DeGenPrime 2.0 is a complete redesign of the original PCR primer design tool, rewritten in Rust for speed and reliability. It includes a beautiful GUI, professional analytics, interactive visualizations, and MAFFT integration - all in one easy-to-use package. A fast Rust core paired with a lightweight Python GUI (customtkinter + polars + seaborn). Two clear workflows: design primer pairs from an alignment, or analyze primers you already have. Installs cleanly from `pip` on every major OS — no Qt, no WebEngine, no native build dance.
 
