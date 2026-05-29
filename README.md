@@ -285,14 +285,60 @@ Compared to original C++ version:
 
 ## 🛠️ Troubleshooting
 
+### 🍎 macOS — first thing to try
+
+Run the diagnostic — it pinpoints which dependency is the actual problem:
+
+```bash
+./scripts/diagnose_mac.sh
+```
+
+You'll get a green ✓ for every working piece and a red ✗ on whatever needs
+fixing, with the exact command to fix it.
+
+### macOS — "the GUI opens then disappears"
+
+This is almost always Apple's deprecated Tk biting you. Install
+Homebrew's Python with proper Tk:
+
+```bash
+brew install python-tk@3.13      # or @3.12 / @3.11
+rm -rf venv                      # nuke the old venv built against broken Tk
+./install.sh                     # rebuild with the working interpreter
+```
+
+The installer auto-detects the working Python — you don't need to set
+anything by hand.
+
+### macOS — "DeGenPrime.app cannot be opened because…"
+
+That's macOS Gatekeeper. The installer clears the quarantine flag, but
+if it still triggers, right-click the app → **Open** → **Open**. After
+the first time, Gatekeeper remembers.
+
+If that doesn't work:
+
+```bash
+xattr -dr com.apple.quarantine DeGenPrime.app
+```
+
+### macOS — the GUI crashes silently when launched from the icon
+
+The GUI writes everything to `gui.log` in the project directory. Check
+the tail of it:
+
+```bash
+tail -50 gui.log
+```
+
 ### `Command not found: rustc`
 Install Rust via rustup. The installer will offer to do this for you, or
 get it manually from https://rustup.rs/
 
 ### `No module named tkinter`
-- **macOS:** `brew install python-tk` (or reinstall Python with tcl/tk support)
+- **macOS:** `brew install python-tk@3.13` (match your Python version)
 - **Ubuntu/Debian:** `sudo apt-get install python3-tk`
-- **Windows:** Reinstall Python from python.org with the *tcl/tk and IDLE* feature checked
+- **Windows:** reinstall Python from python.org with the *tcl/tk and IDLE* feature checked
 
 ### `No primers passed filters`
 Relax the constraints, in this order:
@@ -305,6 +351,17 @@ Relax the constraints, in this order:
 rustup update
 cargo clean && cargo build --release
 ```
+
+### GUI itself — built-in self-test
+
+You can ask the GUI to diagnose itself without running the installer:
+
+```bash
+./venv/bin/python gui/degenprime_gui.py --diagnose
+```
+
+It prints versions of every dependency, runs a live Tk test, and reports
+whether the Rust binary was located.
 
 ### Sequences are unaligned
 Install MAFFT and align before running:
