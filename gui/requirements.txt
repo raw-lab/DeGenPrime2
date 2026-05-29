@@ -1,9 +1,0 @@
-# DeGenPrime GUI dependencies — lightweight, pure pip, no native build needed.
-customtkinter>=5.2.0
-polars>=0.20
-seaborn>=0.13
-matplotlib>=3.7
-pandas>=2.0
-pyarrow>=14.0
-numpy>=1.24
-pyarrow>=14.0  # polars→pandas bridge for seaborn plotting
