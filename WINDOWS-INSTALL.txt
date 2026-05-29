@@ -1,0 +1,22 @@
+WINDOWS USERS: rename the installer before running it
+=====================================================
+
+This archive was sent via Gmail, which blocks .bat files as a security
+measure. The Windows installer has been renamed to:
+
+    install.bat.txt
+
+Before running the installer, restore the .bat extension:
+
+  Option 1 (File Explorer):
+    1. Make sure "File name extensions" is enabled
+       (View → File name extensions).
+    2. Right-click install.bat.txt → Rename → delete the trailing
+       ".txt" so the file is just "install.bat".
+    3. Double-click install.bat.
+
+  Option 2 (Command Prompt, from this folder):
+    ren install.bat.txt install.bat
+    install.bat
+
+Linux and macOS users: ignore this file — use ./install.sh instead.
