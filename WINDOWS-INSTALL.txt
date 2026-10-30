@@ -1,22 +1,17 @@
-WINDOWS USERS: rename the installer before running it
-=====================================================
+DeGenPrime on Windows
+=====================
 
-This archive was sent via Gmail, which blocks .bat files as a security
-measure. The Windows installer has been renamed to:
+1. Install Rust from https://rustup.rs. The default options are fine; accept
+   the Visual Studio C++ Build Tools when the installer offers them.
+2. Rename install.bat.txt to install.bat. It is shipped with a .txt ending
+   because e-mail filters block zip files that contain .bat files.
+3. Double-click install.bat. It builds DeGenPrime, copies degenprime.exe to
+   %LOCALAPPDATA%\DeGenPrime, adds it to your PATH and creates Start Menu and
+   desktop shortcuts called "DeGenPrime" with the DeGenPrime robot icon.
+4. Open DeGenPrime from the Start menu. A console window starts the app and
+   your browser opens it; close the console window to stop it.
 
-    install.bat.txt
+Unaligned sequences are aligned by the built-in MAFFT: there is nothing else
+to install.
 
-Before running the installer, restore the .bat extension:
-
-  Option 1 (File Explorer):
-    1. Make sure "File name extensions" is enabled
-       (View → File name extensions).
-    2. Right-click install.bat.txt → Rename → delete the trailing
-       ".txt" so the file is just "install.bat".
-    3. Double-click install.bat.
-
-  Option 2 (Command Prompt, from this folder):
-    ren install.bat.txt install.bat
-    install.bat
-
-Linux and macOS users: ignore this file — use ./install.sh instead.
+Command line:  degenprime --help     Self-check:  degenprime doctor

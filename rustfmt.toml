@@ -1,0 +1,4 @@
+# `cargo fmt` (or `make format`). src/mafft is vendored and keeps its upstream
+# formatting (it is marked #[rustfmt::skip] in src/lib.rs).
+max_width = 120
+use_small_heuristics = "Max"

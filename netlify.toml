@@ -1,0 +1,6 @@
+# Deploy the website straight from this repository. web/ is prebuilt
+# (web/assets/degenprime.wasm is committed), so Netlify only publishes it.
+# After changing the Rust engine, run scripts/build_wasm.sh and commit the .wasm.
+[build]
+  publish = "web"
+  command = "echo 'web/ is prebuilt: nothing to build'"

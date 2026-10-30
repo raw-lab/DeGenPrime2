@@ -1,85 +1,84 @@
 #!/usr/bin/env bash
-# DeGenPrime end-to-end smoke test.
-#
-# Runs the Rust unit tests, then exercises every CLI surface the GUI
-# depends on. Exits non-zero on any failure so it can wire into CI.
-
+# End-to-end smoke test: unit tests, every CLI subcommand (including the
+# built-in MAFFT on unaligned input), and the desktop GUI's HTTP API (session
+# token, host check, a full design, the icons). Exits non-zero on any failure,
+# so it can run in CI.
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR/.."
+cd "$(dirname "$0")/.."
+ok()   { printf 'ok   %s\n' "$*"; }
+fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
+BIN=target/release/degenprime
+VERSION="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+TMP="$(mktemp -d)"; GUI_PID=""
+trap '[ -n "$GUI_PID" ] && kill "$GUI_PID" 2>/dev/null; rm -rf "$TMP"' EXIT
 
-if [ -t 1 ]; then
-    GREEN=$'\033[0;32m'; RED=$'\033[0;31m'; BLUE=$'\033[0;34m'
-    BOLD=$'\033[1m'; NC=$'\033[0m'
-else
-    GREEN=''; RED=''; BLUE=''; BOLD=''; NC=''
-fi
-ok()   { printf "%b✓ %s%b\n"  "$GREEN" "$*" "$NC"; }
-say()  { printf "%b▸ %s%b\n"  "$BLUE"  "$*" "$NC"; }
-fail() { printf "%b✗ %s%b\n"  "$RED"   "$*" "$NC" >&2; exit 1; }
+cargo build --release --locked --quiet && ok "release build"
+cargo test --release --locked --quiet >/dev/null 2>&1 && ok "unit tests" || fail "unit tests"
+"$BIN" --version | grep -qx "degenprime $VERSION" && ok "version $VERSION" || fail "--version does not say $VERSION"
 
-BIN="$SCRIPT_DIR/../target/release/degenprime"
+"$BIN" design -i data/example_anfD.clust -o "$TMP/anfd" --detailed --fasta -q > /dev/null
+for f in csv json txt fasta; do [ -s "$TMP/anfd.$f" ] || fail "design did not write .$f"; done
+[ "$(wc -l < "$TMP/anfd.csv")" -gt 1 ] || fail "CSV has no primer rows"
+ok "design wrote CSV, JSON, report and FASTA"
+"$BIN" design -i data/example_anfD.clust -o "$TMP/again" -q > /dev/null
+cmp -s "$TMP/anfd.csv" "$TMP/again.csv" && ok "design is deterministic" || fail "two runs differ"
+"$BIN" design -t 1 -i data/example_anfD.clust -o "$TMP/one" -q > /dev/null
+cmp -s "$TMP/anfd.csv" "$TMP/one.csv" && ok "one thread gives the same result" || fail "--threads 1 differs"
+"$BIN" design -i data/example_anfD.clust -o "$TMP/region" --begin 0 --end 700 -q > /dev/null
+awk -F, 'NR>1 && ($7 > 700 || $20 > 700) {bad=1} END {exit bad}' "$TMP/region.csv" && ok "design region respected on both strands" || fail "primer outside region"
 
-say "Building release binary"
-cargo build --release --quiet
-[ -x "$BIN" ] || fail "Binary not built"
-ok "Built $BIN"
-
-say "Running Rust unit tests"
-cargo test --release --quiet
-ok "All Rust tests passed"
-
-# Create a tiny synthetic alignment if no test data is available.
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
-cat > "$TMPDIR/sample.fasta" <<'EOF'
->seq1
-ATGCGCAATCGCAGCTGTAAGTACCTCGAGGCCATGGAGCTGAAGCGCAACATCGAGAAGCTGAACCGCATCGTGCAGAACATGGAGCGCATCGGCGTGACCTACAACGAGAACGTGATCAAGTACATCGAGTACATCCAGAACAAGCTGGCC
->seq2
-ATGCGCAACCGCAGCTGTAAGTACCTGGAGGCCATGGAGCTGAAGCGCAACATCGAGAAGCTGAACCGCATCGTGCAGAACATGGAGCGCATCGGCGTGACCTACAACGAGAACGTGATCAAGTACATCGAGTACATCCAGAACAAGCTGGCC
->seq3
-ATGCGCAATCGCAGCTGCAAGTACCTGGAGGCCATGGAGCTGAAGCGCAACATCGAGAAGCTGAACCGCATCGTGCAGAACATGGAGCGCATCGGCGTGACCTACAACGAGAACGTGATCAAGTACATCGAGTACATCCAGAACAAGCTGGCG
-EOF
-
-say "Design test (FASTA input)"
-"$BIN" design --input "$TMPDIR/sample.fasta" --output "$TMPDIR/result" \
-    --amplicon 50 --min_temp 55 --max_temp 65 --min_gc 30 --max_gc 70 \
-    --detailed --verbose
-[ -f "$TMPDIR/result.csv" ]  || fail "CSV not written"
-[ -f "$TMPDIR/result.json" ] || fail "JSON not written"
-[ -f "$TMPDIR/result.txt" ]  || fail "TXT not written"
-ROWS=$(wc -l < "$TMPDIR/result.csv")
-[ "$ROWS" -gt 1 ] || fail "CSV has no primer rows"
-ok "design produced $((ROWS-1)) primer pairs"
-
-say "Test a single primer"
-"$BIN" test --primer "ATGCCGCACCACGAGTTCGA" --json "$TMPDIR/single.json" \
-    --primer_conc 200 --salt_conc 50 >/dev/null
-[ -f "$TMPDIR/single.json" ] || fail "Single-primer JSON not written"
-ok "test subcommand wrote JSON"
-
-say "Verify JSON contains expected fields"
-python3 - "$TMPDIR/result.json" "$TMPDIR/single.json" <<'PY'
-import json, sys
-report = json.load(open(sys.argv[1]))
-for k in ("version", "generated_at", "input_file", "template_length",
-         "settings", "primer_pairs"):
-    assert k in report, f"missing key {k} in design JSON"
-assert len(report["primer_pairs"]) > 0
-row = report["primer_pairs"][0]
-for k in ("rank","forward_primer","reverse_primer","amplicon_size","tm_difference"):
-    assert k in row, f"missing key {k} in primer row"
-
-analysis = json.load(open(sys.argv[2]))
-for k in ("sequence","length","tm","gc_content","filters"):
-    assert k in analysis, f"missing key {k} in analysis JSON"
-print("JSON schemas OK")
+# Unaligned input: the gaps removed from the bundled MAFFT L-INS-i alignment.
+python3 - data/example_anfD.clust "$TMP/genes.fasta" <<'PY'
+import sys
+seqs = {}
+for line in open(sys.argv[1]):
+    p = line.split()
+    if len(p) == 2 and not line.startswith(("CLUSTAL", " ")):
+        seqs[p[0]] = seqs.get(p[0], "") + p[1]
+with open(sys.argv[2], "w") as f:
+    for name, s in seqs.items():
+        f.write(f">{name}\n{s.replace('-', '')}\n")
 PY
-ok "JSON schemas validated"
+cp "$TMP/genes.fasta" "$TMP/genes.orig"
+"$BIN" align -i "$TMP/genes.fasta" -o "$TMP/realigned.fasta" 2> "$TMP/align.log"
+grep -q "L-INS-i" "$TMP/align.log" || fail "align did not choose L-INS-i like mafft --auto"
+"$BIN" design -i "$TMP/realigned.fasta" -o "$TMP/realigned" -q > /dev/null
+cmp -s "$TMP/anfd.csv" "$TMP/realigned.csv" && ok "align reproduced the MAFFT alignment (same primers)" || fail "built-in MAFFT alignment differs"
+"$BIN" design -i "$TMP/genes.fasta" --fasta --save_alignment -q > "$TMP/design.out" 2> "$TMP/design.err"
+grep -q "aligned them with MAFFT L-INS-i" "$TMP/design.err" || fail "design did not report the alignment"
+cmp -s "$TMP/genes.fasta" "$TMP/genes.orig" || fail "design --fasta overwrote its input"
+[ -s "$TMP/genes_primers.fasta" ] && [ -s "$TMP/genes.aligned.fasta" ] || fail "missing genes_primers.fasta or genes.aligned.fasta"
+cmp -s "$TMP/genes.csv" "$TMP/anfd.csv" && ok "design aligns unaligned input first, without overwriting it" || fail "unaligned design differs"
+if "$BIN" design -i "$TMP/genes.fasta" --align never -o "$TMP/never" -q > /dev/null 2>&1; then :; fi
+[ -s "$TMP/never.csv" ] && ok "--align never pads instead" || fail "--align never"
 
-# Make sure the GUI script at least parses
-say "Verify GUI script syntax"
-python3 -c "import ast; ast.parse(open('gui/degenprime_gui.py').read())"
-ok "GUI script parses"
+"$BIN" test -p ATGCRYCCGGAATTCCAGTC --partner GACTGGAATTCCGGRYGCAT --json "$TMP/p.json" > "$TMP/test.txt"
+grep -q '"fold": 4' "$TMP/p.json" && grep -q "ATGCRYCC" "$TMP/test.txt" && ok "test keeps IUPAC codes (4-fold primer)" || fail "IUPAC handling"
+"$BIN" doctor > "$TMP/doctor.txt" || fail "doctor"
+grep -q "reproduced the bundled MAFFT alignment" "$TMP/doctor.txt" && ok "doctor (aligner self-test included)" || fail "doctor aligner check"
 
-printf "\n%b%s%b\n" "$GREEN$BOLD" "All smoke tests passed." "$NC"
+"$BIN" gui --no_browser --port 0 > "$TMP/gui.log" 2>&1 & GUI_PID=$!
+URL=""
+for _ in $(seq 1 50); do URL="$(grep -o 'http://127.0.0.1:[0-9]*/' "$TMP/gui.log" | head -1 || true)"; [ -n "$URL" ] && break; sleep 0.1; done
+[ -n "$URL" ] || fail "gui did not start"
+TOKEN="$(curl -s "$URL" | grep -o '"token":"[0-9a-f]*"' | cut -d'"' -f4)"
+[ ${#TOKEN} -eq 32 ] || fail "gui page has no session token"
+REQ="$TMP/req.json"; printf '{"input": %s}' "$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$TMP/genes.fasta")" > "$REQ"
+curl -s -X POST -H "X-DGP-Token: $TOKEN" --data-binary @"$REQ" "${URL}api/design" > "$TMP/gui.json"
+grep -q '"ok":true' "$TMP/gui.json" && grep -q '"aligned_with":"MAFFT' "$TMP/gui.json" && ok "gui API aligns and designs" || fail "gui API design"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "${URL}api/version")" = 403 ] && ok "gui API rejects calls without the token" || fail "token check"
+[ "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: evil.example' "$URL")" = 403 ] && ok "gui rejects foreign Host headers" || fail "host check"
+for p in assets/mark.png assets/logo.webp favicon.ico manifest.webmanifest; do
+    [ "$(curl -s -o /dev/null -w '%{http_code}' "$URL$p")" = 200 ] || fail "gui does not serve $p"
+done
+ok "gui serves the logo, icons and manifest"
+
+for f in web/index.html web/_headers web/manifest.webmanifest web/assets/degenprime.js web/assets/degenprime.css \
+         web/assets/degenprime.wasm web/assets/logo.webp web/assets/mark.png web/assets/favicon.ico \
+         wordpress/degenprime/degenprime.php assets/icon.ico assets/icon.icns assets/icons/degenprime-256.png \
+         assets/windows/degenprime.res assets/windows/degenprime-x86_64-gnu.o src/mafft/LICENSE-MAFFT.txt; do
+    [ -s "$f" ] || fail "missing $f"
+done
+grep -q "FileVersion\", \"$VERSION\"" assets/windows/degenprime.rc || fail "Windows resource is not for $VERSION: run scripts/make_windows_resource.sh"
+ok "website, WordPress, icon and licence files present"
+printf '\nAll smoke tests passed.\n'

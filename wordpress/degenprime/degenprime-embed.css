@@ -1,0 +1,6 @@
+/* Placement of the DeGenPrime app inside a WordPress theme. The app's own
+   styles live in its shadow root and are not affected by the theme. */
+.degenprime-embed { margin: 1.5em 0; clear: both; }
+.degenprime-embed degenprime-app { display: block; min-height: 480px; }
+.degenprime-layout-wide { position: relative; width: min(1240px, calc(100vw - 32px)); max-width: none; left: 50%; margin-left: calc(min(1240px, calc(100vw - 32px)) / -2); }
+.degenprime-layout-full { position: relative; width: 100vw; max-width: none; left: 50%; margin-left: -50vw; }

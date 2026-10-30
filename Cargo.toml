@@ -1,18 +1,47 @@
 [package]
 name = "degenprime"
-version = "2.1.0"
+version = "2.3.0"
 edition = "2021"
-authors = ["Richard Allen White III <rwhit101@uncc.edu>"]
-description = "Robust PCR primer design and optimization for phylogenetically similar DNA sequences"
+rust-version = "1.75"
+authors = ["Richard Allen White III <rwhit101@charlotte.edu>"]
+description = "Degenerate PCR primer design from DNA sequences, with a built-in pure-Rust MAFFT aligner: CLI, desktop GUI and WebAssembly engine in one crate"
 repository = "https://github.com/raw-lab/degenprime"
-license = "MIT"
+homepage = "https://github.com/raw-lab/degenprime"
+license-file = "LICENSE"
 readme = "README.md"
+keywords = ["bioinformatics", "pcr", "primer-design", "degenerate", "mafft"]
+categories = ["science", "command-line-utilities"]
+# What the crate needs to build: the website, the installers, the WordPress
+# plugin and the icon sources stay in the repository.
+include = [
+    "/Cargo.toml", "/Cargo.lock", "/build.rs", "/LICENSE", "/README.md", "/docs/CHANGELOG.md",
+    "/src/**", "/data/example_anfD.clust",
+    "/web/index.html", "/web/manifest.webmanifest", "/web/assets/degenprime.js", "/web/assets/degenprime.css",
+    "/web/assets/fonts/*.woff2", "/web/assets/fonts/OFL-Recursive.txt",
+    "/web/assets/logo.webp", "/web/assets/*.png", "/web/assets/favicon.ico",
+    "/assets/windows/degenprime.res", "/assets/windows/degenprime-x86_64-gnu.o",
+]
+
+[features]
+default = ["cli", "gui"]
+# The `degenprime` command-line tool.
+cli = ["dep:clap", "dep:clap_derive"]
+# `degenprime gui`: serves the web app on 127.0.0.1 (standard library only).
+gui = ["cli"]
 
 [dependencies]
-clap = { version = "=4.4.18", features = ["derive"] }
-clap_derive = "=4.4.7"
+# Exact pins keep the crate building on rustc 1.75 (Ubuntu 24.04 apt).
+clap = { version = "=4.4.18", features = ["derive"], optional = true }
+clap_derive = { version = "=4.4.7", optional = true }
 serde = { version = "=1.0.197", features = ["derive"] }
 serde_json = "=1.0.114"
+# The vendored rust-MAFFT aligner (src/mafft) and the parallel design engine.
+# rayon 1.10 / rayon-core 1.12 are the last releases that build with
+# Rust 1.75; on WebAssembly rayon runs everything on the calling thread.
+rayon = "=1.10.0"
+rayon-core = "=1.12.1"
+rustfft = "=6.4.1"
+num-complex = "=0.4.6"
 
 [dev-dependencies]
 tempfile = "=3.8.1"
@@ -24,6 +53,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "degenprime"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [profile.release]
 opt-level = 3

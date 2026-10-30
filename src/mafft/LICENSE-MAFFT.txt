@@ -1,0 +1,88 @@
+Third-party licences for src/mafft
+==================================
+
+src/mafft is a vendored copy of rust-MAFFT 0.2.0
+(https://github.com/luksgrin/rust-MAFFT), a Rust port of MAFFT
+(https://mafft.cbrc.jp/alignment/software/). rust-MAFFT is licensed
+"MIT AND BSD-3-Clause": its own Rust code is under the MIT licence and the
+algorithms ported from MAFFT's C source are under MAFFT's BSD 3-clause
+licence. Both notices are reproduced below, as they require.
+
+These licences apply to src/mafft only. The rest of DeGenPrime is under the
+licence in the LICENSE file at the top of the repository.
+
+If you use the alignments in published work, please cite MAFFT:
+Katoh K, Standley DM (2013). MAFFT multiple sequence alignment software
+version 7: improvements in performance and usability. Molecular Biology and
+Evolution 30(4): 772-780. https://doi.org/10.1093/molbev/mst010
+
+
+rust-MAFFT: LICENSE-MIT
+-----------------------
+
+MIT License
+
+Copyright (c) 2026 Lucas Goiriz (luksgrin)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+rust-MAFFT: LICENSE-BSD (MAFFT)
+-------------------------------
+
+BSD 3-Clause License
+
+This license covers the algorithmic constructs ported from MAFFT
+(https://mafft.cbrc.jp/alignment/software/) and any verbatim or
+near-verbatim translations of MAFFT's C source. Original Rust code,
+infrastructure, and bindings authored for rust-MAFFT are MIT-licensed
+(see LICENSE-MIT).
+
+Upstream MAFFT:
+
+    MAFFT: multiple sequence alignment program
+    Copyright (c) 2009 Kazutaka Katoh
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the
+   distribution.
+
+3. The name of the author may not be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR
+IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT,
+INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.

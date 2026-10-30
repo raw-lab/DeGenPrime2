@@ -1,17 +1,199 @@
 //! Core data models for DeGenPrime.
 //!
-//! `DataNode` represents a single aligned column with IUPAC degeneracy info.
-//! `DataSequence` is a vector of DataNodes (either a single sequence or a consensus
-//! built from an MSA).
+//! * [`DataNode`] — one alignment column (or one primer base): its IUPAC code,
+//!   its most common base, and the fraction of sequences that agree with it.
+//! * [`DataSequence`] — a run of nodes: a consensus built from an alignment, a
+//!   candidate primer window, or a primer typed in by the user.
+//! * [`Primer`] / [`PrimerPair`] — candidate windows and scored pairs.
 //!
-//! Thermodynamic nearest-neighbour parameters follow SantaLucia (1998) PNAS 95(4):1460.
+//! Nucleotides are handled internally as 4-bit masks (A=1, C=2, G=4, T=8), so
+//! IUPAC unions, complements and degeneracy folds are bit operations and every
+//! result is deterministic (2.1 broke ties by iterating a `HashMap`, whose order
+//! is randomised per process, so the same input could give different primers).
+//!
+//! Nearest-neighbour parameters follow SantaLucia (1998) PNAS 95(4):1460.
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
-use std::collections::HashMap;
 
-/// A single aligned column. Tracks the IUPAC code, the most common base, and
-/// the frequency ratio of that most-common base (1.0 means fully conserved).
+/// IUPAC nucleotide codes as 4-bit masks.
+pub mod iupac {
+    pub const A: u8 = 0b0001;
+    pub const C: u8 = 0b0010;
+    pub const G: u8 = 0b0100;
+    pub const T: u8 = 0b1000;
+    pub const ANY: u8 = 0b1111;
+
+    /// The four concrete bases in mask order.
+    pub const BASES: [char; 4] = ['A', 'C', 'G', 'T'];
+    pub const BITS: [u8; 4] = [A, C, G, T];
+
+    /// Mask for an IUPAC character (case-insensitive; `U` reads as `T`,
+    /// `X` as `N`). Returns `None` for gaps and non-nucleotide characters.
+    pub fn mask(c: char) -> Option<u8> {
+        if c.is_ascii() {
+            let m = MASKS[c as usize];
+            return if m == 0 { None } else { Some(m) };
+        }
+        None
+    }
+
+    /// `mask` for every ASCII character (0 = not a nucleotide code).
+    static MASKS: [u8; 128] = {
+        let mut t = [0u8; 128];
+        let mut i = 0;
+        while i < 128 {
+            t[i] = match mask_slow(i as u8 as char) {
+                Some(m) => m,
+                None => 0,
+            };
+            i += 1;
+        }
+        t
+    };
+
+    const fn mask_slow(c: char) -> Option<u8> {
+        Some(match c.to_ascii_uppercase() {
+            'A' => A,
+            'C' => C,
+            'G' => G,
+            'T' | 'U' => T,
+            'R' => A | G,
+            'Y' => C | T,
+            'S' => C | G,
+            'W' => A | T,
+            'K' => G | T,
+            'M' => A | C,
+            'B' => C | G | T,
+            'D' => A | G | T,
+            'H' => A | C | T,
+            'V' => A | C | G,
+            'N' | 'X' => ANY,
+            _ => return None,
+        })
+    }
+
+    /// IUPAC letter for a mask. An empty mask has no letter and maps to `N`.
+    pub fn letter(mask: u8) -> char {
+        match mask & ANY {
+            0b0001 => 'A',
+            0b0010 => 'C',
+            0b0011 => 'M',
+            0b0100 => 'G',
+            0b0101 => 'R',
+            0b0110 => 'S',
+            0b0111 => 'V',
+            0b1000 => 'T',
+            0b1001 => 'W',
+            0b1010 => 'Y',
+            0b1011 => 'H',
+            0b1100 => 'K',
+            0b1101 => 'D',
+            0b1110 => 'B',
+            _ => 'N',
+        }
+    }
+
+    /// Watson–Crick complement of a mask (A<->T, C<->G).
+    pub const fn complement(m: u8) -> u8 {
+        ((m & A) << 3) | ((m & T) >> 3) | ((m & C) << 1) | ((m & G) >> 1)
+    }
+
+    /// Number of concrete bases a code stands for (1 for A/C/G/T, 4 for N).
+    pub fn fold(m: u8) -> u32 {
+        (m & ANY).count_ones()
+    }
+
+    /// Expected G+C fraction of a (possibly ambiguous) base.
+    pub fn gc_fraction(m: u8) -> f32 {
+        GC_FRACTION[(m & ANY) as usize]
+    }
+
+    /// G+C fraction of every mask (0 for the empty mask).
+    static GC_FRACTION: [f32; 16] = {
+        let mut t = [0.0f32; 16];
+        let mut m = 1;
+        while m < 16 {
+            t[m] = (m as u8 & (C | G)).count_ones() as f32 / (m as u8).count_ones() as f32;
+            m += 1;
+        }
+        t
+    };
+
+    /// True for characters accepted in sequences: IUPAC letters plus gaps.
+    pub fn is_sequence_char(c: char) -> bool {
+        matches!(c, '-' | '.') || mask(c).is_some()
+    }
+}
+
+/// SantaLucia (1998) unified ΔH (kcal/mol), indexed `[5' base][3' base]` in A,C,G,T order.
+const NN_DH: [[f32; 4]; 4] =
+    [[-7.9, -8.4, -7.8, -7.2], [-8.5, -8.0, -10.6, -7.8], [-8.2, -9.8, -8.0, -8.4], [-7.2, -8.2, -8.5, -7.9]];
+
+/// SantaLucia (1998) unified ΔS (cal/(mol·K)), same indexing as [`NN_DH`].
+const NN_DS: [[f32; 4]; 4] = [
+    [-22.2, -22.4, -21.0, -20.4],
+    [-22.7, -19.9, -27.2, -21.0],
+    [-22.2, -24.4, -19.9, -22.4],
+    [-21.3, -22.2, -22.7, -22.2],
+];
+
+/// Nearest-neighbour (ΔH, ΔS) for the stack `b1 -> b2`. Ambiguous codes are
+/// averaged over every base they stand for (so `R` contributes the mean of
+/// the A and G stacks). Gaps contribute nothing.
+pub fn nn_params(b1: char, b2: char) -> (f32, f32) {
+    match (iupac::mask(b1), iupac::mask(b2)) {
+        (Some(x), Some(y)) => nn_table()[x as usize][y as usize],
+        _ => (0.0, 0.0),
+    }
+}
+
+/// [`nn_params`] for every pair of IUPAC masks, computed once. Tm is
+/// evaluated for millions of windows on long alignments; the table gives
+/// exactly the numbers the averaging loop gives, without repeating it.
+fn nn_table() -> &'static [[(f32, f32); 16]; 16] {
+    static TABLE: std::sync::OnceLock<[[(f32, f32); 16]; 16]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = [[(0.0f32, 0.0f32); 16]; 16];
+        for (m1, row) in t.iter_mut().enumerate() {
+            for (m2, cell) in row.iter_mut().enumerate() {
+                *cell = nn_params_masks(m1 as u8, m2 as u8);
+            }
+        }
+        t
+    })
+}
+
+fn nn_params_masks(m1: u8, m2: u8) -> (f32, f32) {
+    let (mut dh, mut ds, mut n) = (0.0f32, 0.0f32, 0.0f32);
+    for (i, bi) in iupac::BITS.iter().enumerate() {
+        if m1 & bi == 0 {
+            continue;
+        }
+        for (j, bj) in iupac::BITS.iter().enumerate() {
+            if m2 & bj == 0 {
+                continue;
+            }
+            dh += NN_DH[i][j];
+            ds += NN_DS[i][j];
+            n += 1.0;
+        }
+    }
+    if n == 0.0 {
+        (0.0, 0.0)
+    } else {
+        (dh / n, ds / n)
+    }
+}
+
+/// A single aligned column (or a single primer base).
+///
+/// * `code` — IUPAC code covering every base observed in the column, or `-`
+///   when most sequences have a gap here.
+/// * `most_common` — the consensus base (ties resolve in A, C, G, T order).
+/// * `ratio` — fraction of sequences that carry the consensus state. Gaps
+///   count against conservation: a column that is `A` in one sequence and a
+///   gap in four is 20 % conserved, not 100 % (the 2.1 behaviour).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DataNode {
     code: char,
@@ -20,89 +202,129 @@ pub struct DataNode {
 }
 
 impl DataNode {
-    /// Build a DataNode from the bases observed at this alignment column.
-    /// Gaps (`-`) and Ns are filtered out before counting.
+    /// Build a node from the characters observed in one alignment column.
     pub fn new(chars: Vec<char>) -> Self {
-        let filtered: Vec<char> = chars
-            .into_iter()
-            .filter(|c| *c != '-' && *c != 'N' && *c != 'n')
-            .map(|c| c.to_ascii_uppercase())
-            .collect();
-
-        if filtered.is_empty() {
-            return DataNode {
-                code: 'N',
-                most_common: 'N',
-                ratio: 0.0,
-            };
-        }
-
-        let mut counts: HashMap<char, usize> = HashMap::new();
-        for &c in &filtered {
-            *counts.entry(c).or_insert(0) += 1;
-        }
-
-        let most_common = *counts
-            .iter()
-            .max_by_key(|&(_, v)| v)
-            .map(|(c, _)| c)
-            .unwrap_or(&'N');
-
-        let ratio = counts[&most_common] as f32 / filtered.len() as f32;
-        let code = Self::choose_iupac(&counts);
-
-        DataNode { code, most_common, ratio }
+        Self::from_column(chars)
     }
 
-    /// Convenience: a fully-conserved column with the given base.
+    /// Build a node from an iterator over one alignment column.
+    ///
+    /// Ambiguous calls in the input (e.g. `R`) add fractional counts to each
+    /// base they stand for and widen the IUPAC code. `N` carries no
+    /// information and is ignored. A column becomes a gap node (`-`) when
+    /// more than half of the informative sequences have a gap.
+    pub fn from_column<I: IntoIterator<Item = char>>(column: I) -> Self {
+        let mut acc = ColumnCounts::default();
+        for c in column {
+            acc.add(if c.is_ascii() { c as u8 } else { 0 });
+        }
+        acc.node()
+    }
+}
+
+/// Running tally of one alignment column, filled one sequence at a time.
+/// [`crate::io::SequenceReader::alignment_to_consensus`] keeps one per
+/// column and reads the alignment row by row, which is cache-friendly and
+/// never copies the sequences; [`DataNode::from_column`] uses the same
+/// arithmetic, in the same order, so both give identical nodes.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ColumnCounts {
+    counts: [f32; 4],
+    union: u8,
+    gaps: u32,
+    called: u32,
+}
+
+impl ColumnCounts {
+    /// Add one sequence's character (ASCII; case-insensitive).
+    #[inline]
+    pub fn add(&mut self, c: u8) {
+        if c == b'-' || c == b'.' {
+            self.gaps += 1;
+            return;
+        }
+        match iupac::mask(c as char) {
+            Some(iupac::ANY) | None => {}
+            Some(m) => {
+                let share = 1.0 / iupac::fold(m) as f32;
+                for (i, bit) in iupac::BITS.iter().enumerate() {
+                    if m & bit != 0 {
+                        self.counts[i] += share;
+                    }
+                }
+                self.union |= m;
+                self.called += 1;
+            }
+        }
+    }
+
+    /// The node for this column.
+    pub fn node(&self) -> DataNode {
+        let (counts, union, gaps, called) = (self.counts, self.union, self.gaps, self.called);
+        let informative = called + gaps;
+        if informative == 0 {
+            return DataNode { code: 'N', most_common: 'N', ratio: 0.0 };
+        }
+        if gaps * 2 > informative {
+            return DataNode { code: '-', most_common: '-', ratio: gaps as f32 / informative as f32 };
+        }
+
+        let mut best = 0usize;
+        for i in 1..4 {
+            if counts[i] > counts[best] {
+                best = i;
+            }
+        }
+        DataNode {
+            code: iupac::letter(union),
+            most_common: iupac::BASES[best],
+            ratio: counts[best] / informative as f32,
+        }
+    }
+}
+
+impl DataNode {
+    /// A node for one base typed by the user. IUPAC codes are preserved
+    /// (2.1 turned every ambiguous base into `N`). `ratio` is the chance a
+    /// random variant of the degenerate base matches: 1 for A/C/G/T, ½ for R.
     pub fn from_base(base: char) -> Self {
-        DataNode::new(vec![base.to_ascii_uppercase()])
-    }
-
-    fn choose_iupac(counts: &HashMap<char, usize>) -> char {
-        // Bases actually observed in this column.
-        let has = |b: char| counts.contains_key(&b);
-        let (a, t, g, c) = (has('A'), has('T'), has('G'), has('C'));
-        match (a, t, g, c) {
-            (true, false, false, false) => 'A',
-            (false, true, false, false) => 'T',
-            (false, false, true, false) => 'G',
-            (false, false, false, true) => 'C',
-            (true, true, false, false) => 'W',
-            (false, false, true, true) => 'S',
-            (true, false, true, false) => 'R',
-            (false, true, false, true) => 'Y',
-            (false, true, true, false) => 'K',
-            (true, false, false, true) => 'M',
-            (false, true, true, true) => 'B',
-            (true, false, true, true) => 'D',
-            (true, true, false, true) => 'H',
-            (true, true, true, false) => 'V',
-            _ => 'N',
+        if base == '-' || base == '.' {
+            return DataNode { code: '-', most_common: '-', ratio: 1.0 };
+        }
+        match iupac::mask(base) {
+            Some(m) => {
+                let letter = iupac::letter(m);
+                DataNode { code: letter, most_common: letter, ratio: 1.0 / iupac::fold(m) as f32 }
+            }
+            None => DataNode { code: 'N', most_common: 'N', ratio: 0.0 },
         }
     }
 
-    pub fn code(&self) -> char { self.code }
-    pub fn most_common(&self) -> char { self.most_common }
-    pub fn ratio(&self) -> f32 { self.ratio }
+    pub fn code(&self) -> char {
+        self.code
+    }
+    pub fn most_common(&self) -> char {
+        self.most_common
+    }
+    pub fn ratio(&self) -> f32 {
+        self.ratio
+    }
+    pub fn is_gap(&self) -> bool {
+        self.code == '-'
+    }
 
-    /// Returns the IUPAC complement (single-letter mapping).
-    /// Note: for ambiguous bases this returns the complementary ambiguity code.
+    /// IUPAC complement of a single character (gaps stay gaps).
     pub fn complement_base(base: char) -> char {
-        match base.to_ascii_uppercase() {
-            'A' => 'T', 'T' => 'A', 'U' => 'A',
-            'G' => 'C', 'C' => 'G',
-            'W' => 'W', 'S' => 'S',
-            'R' => 'Y', 'Y' => 'R',
-            'K' => 'M', 'M' => 'K',
-            'B' => 'V', 'V' => 'B',
-            'D' => 'H', 'H' => 'D',
-            'N' => 'N', '-' => '-',
-            other => other,
+        if base == '-' {
+            return '-';
+        }
+        match iupac::mask(base) {
+            Some(m) => iupac::letter(iupac::complement(m)),
+            None => base,
         }
     }
 
-    /// Return a node with the complementary base (same ratio).
+    /// The complementary node (same conservation ratio).
     pub fn complement(&self) -> Self {
         DataNode {
             code: Self::complement_base(self.code),
@@ -111,57 +333,18 @@ impl DataNode {
         }
     }
 
-    // ---- nearest-neighbour thermodynamics (SantaLucia 1998) -------------
-    //
-    // Values are per-stack contributions in kcal/mol (ΔH) and cal/(mol·K) (ΔS).
-    // When the column's most_common base is ambiguous (N or a missing IUPAC
-    // code) we return 0 — these stacks contribute nothing to the Tm, which is
-    // a deliberate conservative behaviour.
-
-    /// Enthalpy contribution for the stack (self -> other).
+    /// ΔH contribution of the stack `self -> other` (kcal/mol).
     pub fn enthalpy_to(&self, other: &DataNode) -> f32 {
-        Self::nn_enthalpy(self.most_common, other.most_common)
+        nn_params(self.most_common, other.most_common).0
     }
 
-    /// Entropy contribution for the stack (self -> other).
+    /// ΔS contribution of the stack `self -> other` (cal/(mol·K)).
     pub fn entropy_to(&self, other: &DataNode) -> f32 {
-        Self::nn_entropy(self.most_common, other.most_common)
-    }
-
-    fn nn_enthalpy(b1: char, b2: char) -> f32 {
-        match (b1, b2) {
-            ('A', 'A') | ('T', 'T') => -7.9,
-            ('A', 'T') => -7.2,
-            ('T', 'A') => -7.2,
-            ('C', 'A') | ('T', 'G') => -8.5,
-            ('G', 'T') | ('A', 'C') => -8.4,
-            ('C', 'T') | ('A', 'G') => -7.8,
-            ('G', 'A') | ('T', 'C') => -8.2,
-            ('C', 'G') => -10.6,
-            ('G', 'C') => -9.8,
-            ('G', 'G') | ('C', 'C') => -8.0,
-            _ => 0.0,
-        }
-    }
-
-    fn nn_entropy(b1: char, b2: char) -> f32 {
-        match (b1, b2) {
-            ('A', 'A') | ('T', 'T') => -22.2,
-            ('A', 'T') => -20.4,
-            ('T', 'A') => -21.3,
-            ('C', 'A') | ('T', 'G') => -22.7,
-            ('G', 'T') | ('A', 'C') => -22.4,
-            ('C', 'T') | ('A', 'G') => -21.0,
-            ('G', 'A') | ('T', 'C') => -22.2,
-            ('C', 'G') => -27.2,
-            ('G', 'C') => -24.4,
-            ('G', 'G') | ('C', 'C') => -19.9,
-            _ => 0.0,
-        }
+        nn_params(self.most_common, other.most_common).1
     }
 }
 
-/// A sequence of DataNodes representing either a real sequence or a consensus.
+/// A sequence of [`DataNode`]s: a consensus, a primer window, or a primer.
 #[derive(Debug, Clone)]
 pub struct DataSequence {
     nodes: Vec<DataNode>,
@@ -177,113 +360,168 @@ impl DataSequence {
         DataSequence { nodes, start_pos }
     }
 
-    /// Build directly from a plain DNA string (e.g. for primer testing).
+    /// Build from a plain primer string; IUPAC codes are kept as typed.
     pub fn from_string(seq: &str) -> Self {
-        let nodes = seq
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .map(|c| DataNode::from_base(c))
-            .collect();
+        let nodes = seq.chars().filter(|c| !c.is_whitespace()).map(DataNode::from_base).collect();
         DataSequence::new(nodes)
     }
 
-    pub fn len(&self) -> usize { self.nodes.len() }
-    pub fn is_empty(&self) -> bool { self.nodes.is_empty() }
-    pub fn nodes(&self) -> &[DataNode] { &self.nodes }
-    pub fn start_pos(&self) -> usize { self.start_pos }
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+    pub fn nodes(&self) -> &[DataNode] {
+        &self.nodes
+    }
+    pub fn start_pos(&self) -> usize {
+        self.start_pos
+    }
 
-    /// Slice a subsequence by start position and length.
+    /// Slice `length` nodes starting at `start`. Out-of-range requests are
+    /// clipped instead of panicking.
     pub fn sub_seq(&self, start: usize, length: usize) -> DataSequence {
-        let end = (start + length).min(self.nodes.len());
-        let sub_nodes = self.nodes[start..end].to_vec();
-        DataSequence::with_start(sub_nodes, self.start_pos + start)
+        let start = start.min(self.nodes.len());
+        let end = start.saturating_add(length).min(self.nodes.len());
+        DataSequence::with_start(self.nodes[start..end].to_vec(), self.start_pos + start)
+    }
+
+    /// The same sequence with gap columns removed — what you actually order.
+    pub fn ungapped(&self) -> DataSequence {
+        DataSequence::with_start(self.nodes.iter().copied().filter(|n| !n.is_gap()).collect(), self.start_pos)
     }
 
     /// Number of non-gap positions.
     pub fn actual_size(&self) -> usize {
-        self.nodes.iter().filter(|n| n.code() != '-').count()
+        self.nodes.iter().filter(|n| !n.is_gap()).count()
     }
 
-    /// Returns a new sequence with positions reversed.
     pub fn reverse(&self) -> DataSequence {
         let mut rev = self.nodes.clone();
         rev.reverse();
         DataSequence::new(rev)
     }
 
-    /// Base-by-base IUPAC complement (no reversal).
     pub fn complement(&self) -> DataSequence {
-        let comp = self.nodes.iter().map(|n| n.complement()).collect();
-        DataSequence::new(comp)
+        DataSequence::new(self.nodes.iter().map(|n| n.complement()).collect())
     }
 
-    /// Reverse complement: the standard DNA operation.
     pub fn reverse_complement(&self) -> DataSequence {
         self.complement().reverse()
     }
 
-    /// Sequence as a string of IUPAC codes.
+    /// IUPAC codes, gaps included (alignment coordinates).
     pub fn codes(&self) -> String {
         self.nodes.iter().map(|n| n.code()).collect()
     }
 
-    /// Sequence using only the most-common base at each column (no degeneracy).
+    /// The degenerate oligo to order: IUPAC codes with gap columns removed.
+    pub fn oligo(&self) -> String {
+        self.nodes.iter().filter(|n| !n.is_gap()).map(|n| n.code()).collect()
+    }
+
+    /// Most-common base at each position (no degeneracy), gaps included.
     pub fn consensus_string(&self) -> String {
         self.nodes.iter().map(|n| n.most_common()).collect()
     }
 
-    /// GC ratio computed against non-gap positions; degenerate codes that
-    /// always pair with G or C (`S`, `B`, `V`) count toward GC. Returns 0
-    /// for an all-gap sequence.
+    /// Most-common bases with gap columns removed.
+    pub fn consensus_oligo(&self) -> String {
+        self.nodes.iter().filter(|n| !n.is_gap()).map(|n| n.most_common()).collect()
+    }
+
+    /// G+C fraction over non-gap positions, using the consensus base.
+    /// Ambiguous bases count fractionally (S = 1, R = ½, N = ½, W = 0).
     pub fn gc_ratio(&self) -> f32 {
-        let total = self.actual_size().max(1);
-        let gc_count = self
-            .nodes
-            .iter()
-            .filter(|n| matches!(n.most_common(), 'G' | 'C'))
-            .count();
-        gc_count as f32 / total as f32
+        measure::gc_ratio(&self.nodes)
     }
 
-    /// Penalty score for ranking: low conservation (low ratio) hurts the score.
-    /// Lower penalty = better.
+    /// Conservation penalty: Σ (1 − ratio) × 100. Lower is better.
     pub fn penalty(&self) -> f32 {
-        self.nodes
-            .iter()
-            .map(|n| (1.0 - n.ratio()) * 100.0)
-            .sum::<f32>()
+        measure::penalty(&self.nodes)
     }
 
-    /// Number of degenerate (ambiguous) positions in the consensus.
-    pub fn degeneracy_count(&self) -> usize {
-        self.nodes
-            .iter()
-            .filter(|n| !matches!(n.code(), 'A' | 'T' | 'G' | 'C' | '-'))
-            .count()
-    }
-
-    /// Number of gap positions.
-    pub fn gap_count(&self) -> usize {
-        self.nodes.iter().filter(|n| n.code() == '-').count()
-    }
-
-    /// Check the last 3 bases against the first 3 (reversed) — a quick
-    /// secondary-structure heuristic for 3' end hairpin potential.
-    pub fn has_complementary_ends(&self) -> bool {
-        if self.len() < 6 {
-            return false;
+    /// Mean conservation of the window (0–1).
+    pub fn mean_conservation(&self) -> f32 {
+        if self.nodes.is_empty() {
+            return 0.0;
         }
-        let n = self.len();
-        let head: Vec<char> = self.nodes[..3].iter().map(|x| x.most_common()).collect();
-        let tail: Vec<char> = self.nodes[n - 3..].iter().map(|x| x.most_common()).collect();
-        // Are head and reversed tail base-pair complements at all 3 positions?
-        head.iter()
-            .zip(tail.iter().rev())
-            .all(|(a, b)| DataNode::complement_base(*a) == *b)
+        self.nodes.iter().map(|n| n.ratio()).sum::<f32>() / self.nodes.len() as f32
+    }
+
+    /// Number of degenerate (non-A/C/G/T) positions, gaps excluded.
+    pub fn degeneracy_count(&self) -> usize {
+        self.nodes.iter().filter(|n| !matches!(n.code(), 'A' | 'T' | 'G' | 'C' | '-')).count()
+    }
+
+    /// Degeneracy fold: how many distinct sequences the degenerate oligo
+    /// stands for (product of per-position folds, saturating).
+    pub fn fold(&self) -> u64 {
+        self.nodes
+            .iter()
+            .filter(|n| !n.is_gap())
+            .map(|n| iupac::mask(n.code()).map(iupac::fold).unwrap_or(1) as u64)
+            .fold(1u64, |acc, f| acc.saturating_mul(f))
+    }
+
+    /// Number of gap columns.
+    pub fn gap_count(&self) -> usize {
+        self.nodes.iter().filter(|n| n.is_gap()).count()
+    }
+
+    /// Quick hairpin heuristic: are the first three and last three bases of
+    /// the oligo complementary (5'-ABC…C'B'A'-3')?
+    pub fn has_complementary_ends(&self) -> bool {
+        measure::complementary_ends(&self.nodes)
     }
 }
 
-/// A candidate primer — a slice of a parent sequence.
+/// The [`DataSequence`] measures on plain node slices. The design pipeline
+/// screens hundreds of thousands of windows with these without copying
+/// them into a `DataSequence` first; the arithmetic, and its order, is the
+/// same, so both paths give bit-identical numbers.
+pub mod measure {
+    use super::{iupac, DataNode};
+
+    /// G+C fraction over non-gap positions, using the consensus base.
+    pub fn gc_ratio(nodes: &[DataNode]) -> f32 {
+        let mut total = 0usize;
+        let mut gc = 0.0f32;
+        for n in nodes.iter().filter(|n| !n.is_gap()) {
+            total += 1;
+            if let Some(m) = iupac::mask(n.most_common()) {
+                gc += iupac::gc_fraction(m);
+            }
+        }
+        if total == 0 {
+            0.0
+        } else {
+            gc / total as f32
+        }
+    }
+
+    /// Conservation penalty: Σ (1 − ratio) × 100, gap columns included.
+    pub fn penalty(nodes: &[DataNode]) -> f32 {
+        nodes.iter().map(|n| (1.0 - n.ratio()) * 100.0).sum::<f32>()
+    }
+
+    /// Are the first three and last three non-gap consensus bases
+    /// complementary (5'-ABC…C'B'A'-3')?
+    pub fn complementary_ends(nodes: &[DataNode]) -> bool {
+        if nodes.iter().filter(|n| !n.is_gap()).count() < 6 {
+            return false;
+        }
+        let mut front = nodes.iter().filter(|n| !n.is_gap());
+        let mut back = nodes.iter().rev().filter(|n| !n.is_gap());
+        (0..3).all(|_| match (front.next(), back.next()) {
+            (Some(a), Some(b)) => DataNode::complement_base(a.most_common()) == b.most_common(),
+            _ => false,
+        })
+    }
+}
+
+/// A candidate primer: a window `[index, index + length)` of a parent sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Primer {
     pub index: usize,
@@ -301,18 +539,22 @@ impl Primer {
         self
     }
 
+    /// Last position covered (inclusive). Zero-length primers return `index`.
     pub fn end_index(&self) -> usize {
-        self.index + self.length - 1
+        (self.index + self.length).saturating_sub(1).max(self.index)
     }
 }
 
 impl Eq for Primer {}
 
 impl Ord for Primer {
+    /// Penalty first, then position and length — consistent with `Eq`
+    /// (2.1 compared penalty only, which breaks `Ord`'s contract).
     fn cmp(&self, other: &Self) -> Ordering {
         self.penalty
-            .partial_cmp(&other.penalty)
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&other.penalty)
+            .then_with(|| self.index.cmp(&other.index))
+            .then_with(|| self.length.cmp(&other.length))
     }
 }
 
@@ -324,9 +566,8 @@ impl PartialOrd for Primer {
 
 /// A forward + reverse primer pair.
 ///
-/// IMPORTANT: `reverse.index` is the offset on the **reverse-complement**
-/// sequence. To translate that to a position on the original (forward) strand
-/// use `PrimerPair::reverse_fwd_strand_position(template_len)`.
+/// `reverse.index` is an offset on the **reverse-complement** strand; use
+/// [`PrimerPair::reverse_fwd_strand_position`] for forward-strand coordinates.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PrimerPair {
     pub forward: Primer,
@@ -335,32 +576,35 @@ pub struct PrimerPair {
     pub tm_diff: f32,
     pub fwd_tm: f32,
     pub rev_tm: f32,
+    /// Pair objective used for ranking (lower is better); see `calculator`.
+    #[serde(default)]
+    pub score: f32,
 }
 
 impl PrimerPair {
-    pub fn new(
-        forward: Primer,
-        reverse: Primer,
-        amplicon_size: usize,
-        tm_diff: f32,
-        fwd_tm: f32,
-        rev_tm: f32,
-    ) -> Self {
-        PrimerPair { forward, reverse, amplicon_size, tm_diff, fwd_tm, rev_tm }
+    pub fn new(forward: Primer, reverse: Primer, amplicon_size: usize, tm_diff: f32, fwd_tm: f32, rev_tm: f32) -> Self {
+        let score = forward.penalty + reverse.penalty + tm_diff;
+        PrimerPair { forward, reverse, amplicon_size, tm_diff, fwd_tm, rev_tm, score }
     }
 
-    /// Convert the reverse primer's index (which is in reverse-complement
-    /// coordinates) to its 5' position on the original forward strand.
+    pub fn with_score(mut self, score: f32) -> Self {
+        self.score = score;
+        self
+    }
+
+    /// Left-most forward-strand position (0-based) of the reverse primer's
+    /// footprint, i.e. where its 3' end sits on the template.
     pub fn reverse_fwd_strand_position(&self, template_len: usize) -> usize {
-        // The reverse primer covers positions [rev.index, rev.index+rev.length)
-        // on the RC strand. On the forward strand this corresponds to
-        // [template_len - rev.index - rev.length, template_len - rev.index).
-        // We report the 5'-most position on the forward strand of the
-        // reverse-primer footprint (i.e. where on the template the primer
-        // anneals in 3'->5' direction).
-        template_len
-            .saturating_sub(self.reverse.index)
-            .saturating_sub(self.reverse.length)
+        template_len.saturating_sub(self.reverse.index).saturating_sub(self.reverse.length)
+    }
+
+    fn key_cmp(&self, other: &Self) -> Ordering {
+        self.forward
+            .index
+            .cmp(&other.forward.index)
+            .then_with(|| self.forward.length.cmp(&other.forward.length))
+            .then_with(|| self.reverse.index.cmp(&other.reverse.index))
+            .then_with(|| self.reverse.length.cmp(&other.reverse.length))
     }
 }
 
@@ -372,16 +616,9 @@ impl PartialEq for PrimerPair {
 impl Eq for PrimerPair {}
 
 impl Ord for PrimerPair {
+    /// Best score first; ties broken by position so ordering is total.
     fn cmp(&self, other: &Self) -> Ordering {
-        // Lower tm_diff is better; tie-break on combined penalty.
-        self.tm_diff
-            .partial_cmp(&other.tm_diff)
-            .unwrap_or(Ordering::Equal)
-            .then_with(|| {
-                (self.forward.penalty + self.reverse.penalty)
-                    .partial_cmp(&(other.forward.penalty + other.reverse.penalty))
-                    .unwrap_or(Ordering::Equal)
-            })
+        self.score.total_cmp(&other.score).then_with(|| self.key_cmp(other))
     }
 }
 
@@ -403,16 +640,16 @@ impl Sequence {
         Sequence { id, sequence }
     }
 
-    pub fn len(&self) -> usize { self.sequence.len() }
-    pub fn is_empty(&self) -> bool { self.sequence.is_empty() }
+    pub fn len(&self) -> usize {
+        self.sequence.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.sequence.is_empty()
+    }
 
     /// Uppercase, strip whitespace.
     pub fn normalize(&self) -> String {
-        self.sequence
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .map(|c| c.to_ascii_uppercase())
-            .collect()
+        self.sequence.chars().filter(|c| !c.is_whitespace()).map(|c| c.to_ascii_uppercase()).collect()
     }
 }
 
@@ -426,31 +663,90 @@ mod tests {
         assert_eq!(DataNode::complement_base('R'), 'Y');
         assert_eq!(DataNode::complement_base('N'), 'N');
         assert_eq!(DataNode::complement_base('-'), '-');
+        for c in "ACGTRYSWKMBDHVN".chars() {
+            let back = DataNode::complement_base(DataNode::complement_base(c));
+            assert_eq!(back, c, "complement must be an involution for {c}");
+        }
     }
 
     #[test]
     fn datanode_picks_iupac_pair() {
         let node = DataNode::new(vec!['A', 'A', 'A', 'G']);
-        assert_eq!(node.code(), 'R'); // A/G is R
+        assert_eq!(node.code(), 'R');
         assert_eq!(node.most_common(), 'A');
         assert!((node.ratio() - 0.75).abs() < 1e-6);
     }
 
     #[test]
+    fn ties_resolve_deterministically() {
+        // 2.1 used HashMap iteration order here, so this flipped between runs.
+        for _ in 0..50 {
+            let node = DataNode::new(vec!['G', 'A', 'G', 'A']);
+            assert_eq!(node.most_common(), 'A');
+            assert_eq!(node.code(), 'R');
+        }
+    }
+
+    #[test]
+    fn gaps_count_against_conservation() {
+        let mostly_gap = DataNode::new(vec!['A', '-', '-', '-', '-']);
+        assert!(mostly_gap.is_gap());
+        assert_eq!(DataSequence::new(vec![mostly_gap]).gap_count(), 1);
+        let some_gap = DataNode::new(vec!['A', 'A', 'A', '-', '-']);
+        assert_eq!(some_gap.code(), 'A');
+        assert!((some_gap.ratio() - 0.6).abs() < 1e-6);
+    }
+
+    #[test]
+    fn ambiguous_input_calls_widen_the_code() {
+        let node = DataNode::new(vec!['A', 'A', 'R']);
+        assert_eq!(node.code(), 'R');
+        assert_eq!(node.most_common(), 'A');
+    }
+
+    #[test]
+    fn user_primer_keeps_iupac_codes() {
+        let s = DataSequence::from_string("ATGCRYN");
+        assert_eq!(s.codes(), "ATGCRYN");
+        assert_eq!(s.degeneracy_count(), 3);
+        assert_eq!(s.fold(), 2 * 2 * 4);
+    }
+
+    #[test]
     fn reverse_complement_is_involutive() {
-        let s = DataSequence::from_string("ATGCAATTGC");
-        let rc = s.reverse_complement();
-        let back = rc.reverse_complement();
+        let s = DataSequence::from_string("ATGCAATTGCRY");
+        let back = s.reverse_complement().reverse_complement();
         assert_eq!(s.codes(), back.codes());
     }
 
     #[test]
     fn gc_ratio_correct() {
-        let s = DataSequence::from_string("GGCC");
-        assert!((s.gc_ratio() - 1.0).abs() < 1e-6);
-        let s2 = DataSequence::from_string("ATAT");
-        assert!((s2.gc_ratio() - 0.0).abs() < 1e-6);
-        let s3 = DataSequence::from_string("ATGC");
-        assert!((s3.gc_ratio() - 0.5).abs() < 1e-6);
+        assert!((DataSequence::from_string("GGCC").gc_ratio() - 1.0).abs() < 1e-6);
+        assert!((DataSequence::from_string("ATAT").gc_ratio()).abs() < 1e-6);
+        assert!((DataSequence::from_string("ATGC").gc_ratio() - 0.5).abs() < 1e-6);
+        assert!((DataSequence::from_string("SSWW").gc_ratio() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sub_seq_never_panics() {
+        let s = DataSequence::from_string("ACGT");
+        assert_eq!(s.sub_seq(10, 5).len(), 0);
+        assert_eq!(s.sub_seq(2, 99).codes(), "GT");
+    }
+
+    #[test]
+    fn ambiguous_stacks_are_averaged() {
+        let (dh_r, _) = nn_params('R', 'C');
+        let (dh_a, _) = nn_params('A', 'C');
+        let (dh_g, _) = nn_params('G', 'C');
+        assert!((dh_r - (dh_a + dh_g) / 2.0).abs() < 1e-5);
+        assert_eq!(nn_params('-', 'A'), (0.0, 0.0));
+    }
+
+    #[test]
+    fn primer_ordering_is_total() {
+        let a = Primer::new(1, 20).with_penalty(5.0);
+        let b = Primer::new(2, 20).with_penalty(5.0);
+        assert_ne!(a.cmp(&b), Ordering::Equal);
     }
 }
